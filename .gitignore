@@ -1,6 +1,8 @@
-Data/
-lichess_db_standard_rated_2018-06.pgn.zst
-
+# Large dataset files
+*.pgn
+*.pgn.zst
+*.zst
+data/
 # Python cache
 __pycache__/
 *.pyc
