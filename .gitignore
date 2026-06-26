@@ -8,6 +8,10 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.npy
+X_train.npy
+y_train.npy
+move_vocab.npy
 
 # Virtual environment
 .venv/
