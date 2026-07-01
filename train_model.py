@@ -2,11 +2,9 @@ import torch
 import torch.nn as nn
 import numpy as np
 from torch.utils.data import DataLoader, IterableDataset
-from torch.optim.lr_scheduler import OneCycleLR
 import gc
 import os
 from cnn import ChessCNN 
-
 
 torch.manual_seed(42)
 
@@ -19,18 +17,18 @@ CHECKPOINT_FILE = "model/checkpoint.pth"
 device = "mps" if torch.backends.mps.is_available() else "cpu"
 print(f"Using Device {device}")
 
-
 # ====================
-# STREAMING DATASET
+# STREAMING DATASET WITH DATA AUGMENTATION
 # ====================
 class StreamingChessDataset(IterableDataset):
-    def __init__(self, X_path, y_path, start=0, end=None, batch_size=64):
+    def __init__(self, X_path, y_path, start=0, end=None, batch_size=64, augment=False):
         super().__init__()
         self.X_path = X_path
         self.y_path = y_path
         self.start = start
         self.end = end
         self.batch_size = batch_size
+        self.augment = augment
         
         X = np.load(self.X_path, mmap_mode='r')
         self.total_size = X.shape[0]
@@ -50,6 +48,11 @@ class StreamingChessDataset(IterableDataset):
             end = min(i + self.batch_size, self.end)
             batch_X = torch.tensor(X[i:end], dtype=torch.float32)
             batch_y = torch.tensor(y[i:end], dtype=torch.long)
+            
+            # Data Augmentation: Random Horizontal Flip (50% chance)
+            if self.augment and torch.rand(1) > 0.5:
+                batch_X = torch.flip(batch_X, dims=[2])
+            
             batch_X = batch_X.permute(0, 3, 1, 2).contiguous()
             yield batch_X, batch_y
         
@@ -83,9 +86,9 @@ print(f"Test: {test_size:,}")
 # ====================
 # CREATE DATASETS
 # ====================
-train_stream = StreamingChessDataset(X_TRAIN, Y_TRAIN, start=0, end=train_size, batch_size=64)
-val_stream = StreamingChessDataset(X_TRAIN, Y_TRAIN, start=train_size, end=train_size + val_size, batch_size=64)
-test_stream = StreamingChessDataset(X_TRAIN, Y_TRAIN, start=train_size + val_size, end=total_examples, batch_size=64)
+train_stream = StreamingChessDataset(X_TRAIN, Y_TRAIN, start=0, end=train_size, batch_size=64, augment=True)
+val_stream = StreamingChessDataset(X_TRAIN, Y_TRAIN, start=train_size, end=train_size + val_size, batch_size=64, augment=False)
+test_stream = StreamingChessDataset(X_TRAIN, Y_TRAIN, start=train_size + val_size, end=total_examples, batch_size=64, augment=False)
 
 train_loader = DataLoader(train_stream, batch_size=None, num_workers=0)
 val_loader = DataLoader(val_stream, batch_size=None, num_workers=0)
@@ -108,16 +111,7 @@ print(f"Total parameters: {total_params:,}")
 # TRAINING SETUP
 # ====================
 criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.01)
-
-steps_per_epoch = train_size // 64
-scheduler = OneCycleLR(
-    optimizer,
-    max_lr=0.003,
-    epochs=30,
-    steps_per_epoch=steps_per_epoch,
-    pct_start=0.3
-)
+optimizer = torch.optim.AdamW(model.parameters(), lr=0.0001, weight_decay=0.1)  # ← Lower LR, higher weight decay
 
 # ====================
 # LOAD CHECKPOINT IF EXISTS
@@ -131,7 +125,6 @@ if os.path.exists(CHECKPOINT_FILE):
     checkpoint = torch.load(CHECKPOINT_FILE, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
     start_epoch = checkpoint['epoch'] + 1
     best_val_loss = checkpoint['best_val_loss']
     best_val_acc = checkpoint['best_val_acc']
@@ -163,8 +156,11 @@ for epoch in range(start_epoch, num_epochs):
         
         optimizer.zero_grad()
         loss.backward()
+        
+        # Gradient clipping
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # ← NEW!
+        
         optimizer.step()
-        scheduler.step()
         
         train_loss += loss.item()
         _, predicted = torch.max(outputs, 1)
@@ -208,12 +204,11 @@ for epoch in range(start_epoch, num_epochs):
         torch.save(model.state_dict(), CNN_MODEL)
         print(f"  ✅ New best model saved! (Val Acc: {val_acc:.4f}")
     
-    # Save checkpoint (for resuming)
+    # Save checkpoint
     torch.save({
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict(),
         'best_val_loss': best_val_loss,
         'best_val_acc': best_val_acc,
     }, CHECKPOINT_FILE)

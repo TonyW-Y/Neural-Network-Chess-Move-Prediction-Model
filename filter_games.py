@@ -81,7 +81,7 @@ def save_games_to_pgn(games, output_file):
     print(f"✅ Saved {len(games)} games to {output_file}")
 
 def main():
-    TARGET_GAMES = 50000
+    TARGET_GAMES = 10000
 
     print(f"Creating dataset: {TARGET_GAMES} total games")
     print("=" * 50)
