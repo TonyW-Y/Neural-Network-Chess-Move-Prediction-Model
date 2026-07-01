@@ -3,6 +3,7 @@
 *.pgn.zst
 *.zst
 data/
+model/
 # Python cache
 __pycache__/
 *.pyc

@@ -2,9 +2,10 @@ import chess
 import chess.pgn
 import io
 import numpy as np
+import os
 
-FILTERED_DATA = "data/filtered/lichess_2018_classical_2000elo_test_10k.pgn"
-BATCH_SIZE = 1000  # Process 1000 games at a time
+FILTERED_DATA = "data/filtered/lichess_2018_classical_2000elo_test_50k.pgn"
+BATCH_SIZE = 100000  # Save 100k examples at a time
 
 
 def pgn_conversion(game):
@@ -37,7 +38,27 @@ def fen_to_tensor(fen):
             tensor[row, col, channel] = 1.0
     return tensor
 
-
+def save_batch(X_batch, y_batch, batch_num):
+    """Save a batch to disk and clear memory"""
+    X_arr = np.array(X_batch)
+    y_arr = np.array(y_batch)
+    
+    if batch_num == 1:
+        # First batch: create files
+        np.save("data/filtered/X_train_temp.npy", X_arr)
+        np.save("data/filtered/y_train_temp.npy", y_arr)
+    else:
+        # Append to existing files
+        X_existing = np.load("data/filtered/X_train_temp.npy")
+        y_existing = np.load("data/filtered/y_train_temp.npy")
+        
+        X_combined = np.concatenate([X_existing, X_arr])
+        y_combined = np.concatenate([y_existing, y_arr])
+        
+        np.save("data/filtered/X_train_temp.npy", X_combined)
+        np.save("data/filtered/y_train_temp.npy", y_combined)
+    
+    print(f"💾 Batch {batch_num} saved. Total examples: {len(X_combined if batch_num > 1 else X_arr)}")
 
 def main():
     all_X = []
@@ -45,8 +66,11 @@ def main():
     move_vocab = {}
     next_idx = 0
     game_count = 0
+    batch_num = 0
+    examples_in_batch = 0
     
     print("Starting processing...")
+    print(f"Processing: {FILTERED_DATA}")
     
     with open(FILTERED_DATA, 'r') as f:
         while True:
@@ -65,28 +89,38 @@ def main():
                 all_y.append(move_vocab[move])
             
             game_count += 1
+            examples_in_batch = len(all_X)
+            
+            # Save batch when it gets big
+            if examples_in_batch >= BATCH_SIZE:
+                batch_num += 1
+                save_batch(all_X, all_y, batch_num)
+                
+                # Clear memory!
+                all_X = []
+                all_y = []
+                examples_in_batch = 0
             
             if game_count % 100 == 0:
-                print(f"Processed {game_count} games, {len(all_X)} examples, vocab size: {len(move_vocab)}")
+                print(f"Processed {game_count} games, {len(move_vocab)} vocab size")
     
-    print("\nConverting to NumPy arrays...")
+    # Save final batch
+    if all_X:
+        batch_num += 1
+        save_batch(all_X, all_y, batch_num)
     
-    # Convert to NumPy arrays
-    X = np.array(all_X)
-    y = np.array(all_y)
-    
-    # Save one big file
-    np.save("data/filtered/X_train.npy", X)
-    np.save("data/filtered/y_train.npy", y)
+    # Rename final files
+    if os.path.exists("data/filtered/X_train_temp.npy"):
+        os.rename("data/filtered/X_train_temp.npy", "data/filtered/X_train.npy")
+        os.rename("data/filtered/y_train_temp.npy", "data/filtered/y_train.npy")
+        print(f"\n✅ Saved X_train.npy and y_train.npy")
     
     # Save vocabulary
     vocab_array = np.array(list(move_vocab.items()), dtype=object)
     np.save("data/filtered/move_vocab.npy", vocab_array)
     
     print(f"\n✅ Done! {game_count} games, {len(move_vocab)} unique moves")
-    print(f"📊 X shape: {X.shape}")
-    print(f"📊 y shape: {y.shape}")
-    print(f"💾 Saved to X_train.npy and y_train.npy")
+    print(f"💾 Vocabulary saved to move_vocab.npy")
 
 if __name__ == "__main__":
     main()

@@ -3,7 +3,7 @@ import io
 from data_prep import parse_pgn_game
 
 DATA_FILE = "data/lichess_db_standard_rated_2018-06.pgn.zst"
-OUTPUT_FILE = "data/filtered/lichess_2018_classical_2000elo_test_10k.pgn"
+OUTPUT_FILE = "data/filtered/lichess_2018_classical_2000elo_test_50k.pgn"
 decompressor = zstd.ZstdDecompressor()
 
 def stream_games(max_games=None):
@@ -81,12 +81,13 @@ def save_games_to_pgn(games, output_file):
     print(f"✅ Saved {len(games)} games to {output_file}")
 
 def main():
-    TARGET_GAMES = 10000
+    TARGET_GAMES = 50000
 
     print(f"Creating dataset: {TARGET_GAMES} total games")
     print("=" * 50)
 
-    # Get Classical games with ELO >= 2000, keep 10,000 games
+    # Step 1: Get ALL Classical games
+    print("\n🔍 Getting ALL Classical 2000+ games...")
     classical = filter_games(
         "Rated Classical game", 
         2000, 
@@ -97,45 +98,48 @@ def main():
 
     remaining = TARGET_GAMES - len(classical)
 
-    if remaining <= 0:
-        # We already have enough Classical games
-        print(f"\n✅ Enough Classical games! Using {TARGET_GAMES} of them")
-        final_games = classical[:TARGET_GAMES]
-    else:
-        # Need Rapid games to fill the gap
-        print(f"\nNeed {remaining} more games from Rapid...")
-        
+    # Step 2: Fill remaining with Rapid games
+    if remaining > 0:
+        print(f"\n🔍 Need {remaining} more games from Rapid...")
         rapid_games = filter_games(
             "Rated Rapid game", 
             2000, 
-            max_games=remaining,  # Only need enough to fill
+            max_games=remaining,
             max_to_process=None
         )
-        
         print(f"   Found {len(rapid_games)} Rapid games")
-        
-        # Combine
-        final_games = classical + rapid_games
-        
-        print(f"\n  Final dataset:")
-        print(f"  Classical: {len(classical)} games")
-        print(f"  Rapid: {len(rapid_games)} games")
-        print(f"  Total: {len(final_games)} games")
+        remaining -= len(rapid_games)
+    else:
+        rapid_games = []
+
+    # Step 3: If still need more, use Bullet games
+    if remaining > 0:
+        print(f"\n🔍 Still need {remaining} more games. Getting from Bullet...")
+        bullet_games = filter_games(
+            "Rated Bullet game", 
+            2000, 
+            max_games=remaining,
+            max_to_process=None
+        )
+        print(f"   Found {len(bullet_games)} Bullet games")
+    else:
+        bullet_games = []
+
+    # Step 4: Combine all games
+    final_games = classical + rapid_games + bullet_games
+
+    print(f"\n📊 Final dataset:")
+    print(f"  Classical: {len(classical)} games")
+    print(f"  Rapid: {len(rapid_games)} games")
+    print(f"  Bullet: {len(bullet_games)} games")
+    print(f"  Total: {len(final_games)} games")
     
     # Save to file
     if final_games:
         save_games_to_pgn(final_games, OUTPUT_FILE)
-        print(f"\n✅ Saved {len(final_games)} games")
+        print(f"\n✅ Saved {len(final_games)} games to {OUTPUT_FILE}")
     else:
         print("❌ No games found")
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
