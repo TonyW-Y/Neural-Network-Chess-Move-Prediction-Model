@@ -18,17 +18,16 @@ device = "mps" if torch.backends.mps.is_available() else "cpu"
 print(f"Using Device {device}")
 
 # ====================
-# STREAMING DATASET WITH DATA AUGMENTATION
+# STREAMING DATASET (NO AUGMENTATION)
 # ====================
 class StreamingChessDataset(IterableDataset):
-    def __init__(self, X_path, y_path, start=0, end=None, batch_size=64, augment=False):
+    def __init__(self, X_path, y_path, start=0, end=None, batch_size=64):
         super().__init__()
         self.X_path = X_path
         self.y_path = y_path
         self.start = start
         self.end = end
         self.batch_size = batch_size
-        self.augment = augment
         
         X = np.load(self.X_path, mmap_mode='r')
         self.total_size = X.shape[0]
@@ -48,11 +47,6 @@ class StreamingChessDataset(IterableDataset):
             end = min(i + self.batch_size, self.end)
             batch_X = torch.tensor(X[i:end], dtype=torch.float32)
             batch_y = torch.tensor(y[i:end], dtype=torch.long)
-            
-            # Data Augmentation: Random Horizontal Flip (50% chance)
-            if self.augment and torch.rand(1) > 0.5:
-                batch_X = torch.flip(batch_X, dims=[2])
-            
             batch_X = batch_X.permute(0, 3, 1, 2).contiguous()
             yield batch_X, batch_y
         
@@ -86,17 +80,22 @@ print(f"Test: {test_size:,}")
 # ====================
 # CREATE DATASETS
 # ====================
-train_stream = StreamingChessDataset(X_TRAIN, Y_TRAIN, start=0, end=train_size, batch_size=64, augment=True)
-val_stream = StreamingChessDataset(X_TRAIN, Y_TRAIN, start=train_size, end=train_size + val_size, batch_size=64, augment=False)
-test_stream = StreamingChessDataset(X_TRAIN, Y_TRAIN, start=train_size + val_size, end=total_examples, batch_size=64, augment=False)
+train_stream = StreamingChessDataset(X_TRAIN, Y_TRAIN, start=0, end=train_size, batch_size=64)
+val_stream = StreamingChessDataset(X_TRAIN, Y_TRAIN, start=train_size, end=train_size + val_size, batch_size=64)
+test_stream = StreamingChessDataset(X_TRAIN, Y_TRAIN, start=train_size + val_size, end=total_examples, batch_size=64)
 
 train_loader = DataLoader(train_stream, batch_size=None, num_workers=0)
 val_loader = DataLoader(val_stream, batch_size=None, num_workers=0)
 test_loader = DataLoader(test_stream, batch_size=None, num_workers=0)
 
-print(f"Train batches: {train_size // 64:,}")
-print(f"Val batches: {val_size // 64:,}")
-print(f"Test batches: {test_size // 64:,}")
+# Fix: Calculate actual number of batches
+train_batches = train_size // 64
+val_batches = val_size // 64
+test_batches = test_size // 64
+
+print(f"Train batches: {train_batches:,}")
+print(f"Val batches: {val_batches:,}")
+print(f"Test batches: {test_batches:,}")
 
 # ====================
 # CREATE MODEL
@@ -108,10 +107,10 @@ total_params = sum(p.numel() for p in model.parameters())
 print(f"Total parameters: {total_params:,}")
 
 # ====================
-# TRAINING SETUP
+# TRAINING SETUP (BALANCED)
 # ====================
 criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.AdamW(model.parameters(), lr=0.0001, weight_decay=0.1)  # ← Lower LR, higher weight decay
+optimizer = torch.optim.AdamW(model.parameters(), lr=0.0005, weight_decay=0.01)
 
 # ====================
 # LOAD CHECKPOINT IF EXISTS
@@ -134,7 +133,7 @@ else:
     print("⚠️ No checkpoint found, starting from scratch")
 
 # ====================
-# TRAINING LOOP
+# TRAINING LOOP (FIXED LOSS CALCULATION)
 # ====================
 num_epochs = 30
 
@@ -147,8 +146,10 @@ for epoch in range(start_epoch, num_epochs):
     train_loss = 0
     train_correct = 0
     train_total = 0
+    batch_count = 0  # ← FIX: Track actual batches
     
     for batch_X, batch_y in train_loader:
+        batch_count += 1  # ← FIX: Increment per batch
         batch_X, batch_y = batch_X.to(device), batch_y.to(device)
         
         outputs = model(batch_X)
@@ -156,10 +157,6 @@ for epoch in range(start_epoch, num_epochs):
         
         optimizer.zero_grad()
         loss.backward()
-        
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # ← NEW!
-        
         optimizer.step()
         
         train_loss += loss.item()
@@ -169,6 +166,8 @@ for epoch in range(start_epoch, num_epochs):
         
         del batch_X, batch_y
     
+    # FIX: Divide by number of batches, not len(train_loader)
+    avg_train_loss = train_loss / batch_count
     train_acc = train_correct / train_total
     
     # Validation
@@ -176,9 +175,11 @@ for epoch in range(start_epoch, num_epochs):
     val_loss = 0
     val_correct = 0
     val_total = 0
+    val_batch_count = 0  # ← FIX: Track batches
     
     with torch.no_grad():
         for batch_X, batch_y in val_loader:
+            val_batch_count += 1  # ← FIX: Increment per batch
             batch_X, batch_y = batch_X.to(device), batch_y.to(device)
             outputs = model(batch_X)
             loss = criterion(outputs, batch_y)
@@ -190,16 +191,19 @@ for epoch in range(start_epoch, num_epochs):
             
             del batch_X, batch_y
     
+    # FIX: Divide by number of batches
+    avg_val_loss = val_loss / val_batch_count
     val_acc = val_correct / val_total
     
     print(f"Epoch {epoch+1}/{num_epochs}")
-    print(f"  Train Loss: {train_loss/len(train_loader):.4f}, Acc: {train_acc:.4f}")
-    print(f"  Val Loss: {val_loss/len(val_loader):.4f}, Acc: {val_acc:.4f}")
+    print(f"  Train Loss: {avg_train_loss:.4f}, Acc: {train_acc:.4f}")
+    print(f"  Val Loss: {avg_val_loss:.4f}, Acc: {val_acc:.4f}")
     print(f"  LR: {optimizer.param_groups[0]['lr']:.6f}")
+    print(f"  Batches: {batch_count} train, {val_batch_count} val")
     
     # Save best model
-    if val_loss < best_val_loss:
-        best_val_loss = val_loss
+    if avg_val_loss < best_val_loss:
+        best_val_loss = avg_val_loss
         best_val_acc = val_acc
         torch.save(model.state_dict(), CNN_MODEL)
         print(f"  ✅ New best model saved! (Val Acc: {val_acc:.4f}")
@@ -220,15 +224,17 @@ for epoch in range(start_epoch, num_epochs):
 print("\n✅ Training complete!")
 
 # ====================
-# TESTING
+# TESTING (FIXED)
 # ====================
 print("\nTesting model...")
 model.eval()
 test_correct = 0
 test_total = 0
+test_batch_count = 0
 
 with torch.no_grad():
     for batch_X, batch_y in test_loader:
+        test_batch_count += 1
         batch_X, batch_y = batch_X.to(device), batch_y.to(device)
         outputs = model(batch_X)
         _, predicted = torch.max(outputs, 1)
